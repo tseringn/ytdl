@@ -122,28 +122,43 @@ export const YoutubeDownloader: React.FC = () => {
         status: "preparing",
       });
 
-      // Start progress polling
-      clearProgressInterval();
-      progressInterval.current = setInterval(() => {
-        checkProgress(videoInfo.videoId);
-      }, 1000);
-
       // Create download URL with format if selected
       const downloadUrl = `${API_BASE_URL}/download?url=${encodeURIComponent(url)}${
         selectedFormat ? `&itag=${selectedFormat}` : ""
       }`;
 
-      // Create an invisible anchor element to trigger the download
+      // Make a GET request to download the video
+      const response = await axios.get(downloadUrl, {
+        responseType: "blob", // Important for downloading files
+        onDownloadProgress: (progressEvent) => {
+          const { loaded, total } = progressEvent;
+          setDownloadProgress({
+            progress: Math.round((loaded / (total ?? 1)) * 100),
+            downloadedBytes: loaded,
+            totalBytes: total ?? 0,
+            status: "downloading",
+          });
+        },
+      });
+
+      // Create a blob from the response data
+      const blob = new Blob([response.data]);
+      const urlBlob = URL.createObjectURL(blob);
+
+      // Create a link element to trigger the download
       const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.style.display = "none";
+      link.href = urlBlob;
+      link.download = "video.mp4"; // Specify the filename
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(urlBlob); // Clean up the URL object
+
+      setSuccess("Download completed!");
     } catch (err) {
-      setError("Download failed to start");
+      setError("Download failed: ");
+    } finally {
       setIsDownloading(false);
-      clearProgressInterval();
     }
   };
 

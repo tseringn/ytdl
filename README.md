@@ -20,7 +20,7 @@ That’s why we built the **YouTube Video Downloader App** — a fast, ad-free s
 First, clone the repository to your local machine:
 
 ```bash
-git clone https://github.com/your-repo/youtube-downloader.git
+git clone https://github.com/tseringn/ytdl.git
 cd youtube-downloader
 ```
 
