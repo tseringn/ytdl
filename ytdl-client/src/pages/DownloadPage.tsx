@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import {
   Box,
@@ -9,30 +9,67 @@ import {
   Container,
   Paper,
   Alert,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
 } from "@mui/material";
 
 const API_BASE_URL = "http://localhost:3000/api/youtube";
+
+interface VideoFormat {
+  itag: number;
+  quality: string;
+  mimeType: string;
+}
 
 interface VideoInfo {
   valid: boolean;
   title: string;
   thumbnail: string;
   duration: string;
+  videoId: string;
+  formats: VideoFormat[];
+}
+
+interface DownloadProgress {
+  progress: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  status: "preparing" | "downloading" | "completed" | "error" | "not_found";
 }
 
 export const YoutubeDownloader: React.FC = () => {
   const [url, setUrl] = useState("");
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [selectedFormat, setSelectedFormat] = useState<number | "">("");
   const [isDownloading, setIsDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const progressInterval = useRef<NodeJS.Timeout>();
+
+  const clearProgressInterval = () => {
+    if (progressInterval.current) {
+      clearInterval(progressInterval.current);
+      progressInterval.current = undefined;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      clearProgressInterval();
+    };
+  }, []);
 
   const validateUrl = async () => {
     try {
       setError("");
       setSuccess("");
       setVideoInfo(null);
+      setDownloadProgress(null);
+      setSelectedFormat("");
+      clearProgressInterval();
 
       const response = await axios.get(`${API_BASE_URL}/validate`, {
         params: { url },
@@ -44,55 +81,76 @@ export const YoutubeDownloader: React.FC = () => {
     }
   };
 
+  const checkProgress = useCallback(async (videoId: string) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/progress`, {
+        params: { videoId },
+      });
+
+      setDownloadProgress(response.data);
+
+      if (response.data.status === "completed") {
+        setIsDownloading(false);
+        setSuccess("Download completed successfully!");
+        clearProgressInterval();
+        return true;
+      } else if (response.data.status === "error") {
+        setIsDownloading(false);
+        setError("Download failed");
+        clearProgressInterval();
+        return true;
+      }
+
+      return false;
+    } catch (err) {
+      console.error("Error fetching progress:", err);
+      return false;
+    }
+  }, []);
+
   const downloadVideo = async () => {
+    if (!videoInfo) return;
+
     try {
       setIsDownloading(true);
       setError("");
       setSuccess("");
-
-      const response = await axios.post(`${API_BASE_URL}/download`, null, {
-        params: { url },
+      setDownloadProgress({
+        progress: 0,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        status: "preparing",
       });
 
-      if (response.data.success) {
-        setSuccess("Download completed successfully!");
-      }
+      // Start progress polling
+      clearProgressInterval();
+      progressInterval.current = setInterval(() => {
+        checkProgress(videoInfo.videoId);
+      }, 1000);
+
+      // Create download URL with format if selected
+      const downloadUrl = `${API_BASE_URL}/download?url=${encodeURIComponent(url)}${
+        selectedFormat ? `&itag=${selectedFormat}` : ""
+      }`;
+
+      // Create an invisible anchor element to trigger the download
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     } catch (err) {
-      setError("Download failed");
-    } finally {
+      setError("Download failed to start");
       setIsDownloading(false);
-      setDownloadProgress(0);
+      clearProgressInterval();
     }
   };
 
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout;
-
-    if (isDownloading && videoInfo) {
-      intervalId = setInterval(async () => {
-        try {
-          const response = await axios.get(`${API_BASE_URL}/progress`, {
-            params: { videoId: url.split("v=")[1] },
-          });
-
-          setDownloadProgress(response.data.progress);
-
-          if (response.data.progress >= 100) {
-            clearInterval(intervalId);
-            setIsDownloading(false);
-          }
-        } catch (err) {
-          console.error("Error fetching progress:", err);
-        }
-      }, 1000);
-    }
-
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
-    };
-  }, [isDownloading, url, videoInfo]);
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return "0 MB";
+    return `${bytes.toFixed(1)} MB`;
+  };
 
   return (
     <Container maxWidth="md">
@@ -136,6 +194,23 @@ export const YoutubeDownloader: React.FC = () => {
               alt={videoInfo.title}
               style={{ maxWidth: "100%", height: "auto" }}
             />
+
+            <FormControl fullWidth sx={{ mt: 2, mb: 2 }}>
+              <InputLabel>Video Quality</InputLabel>
+              <Select
+                value={selectedFormat}
+                onChange={(e) => setSelectedFormat(e.target.value as number)}
+                label="Video Quality"
+                disabled={isDownloading}
+              >
+                {videoInfo.formats.map((format) => (
+                  <MenuItem key={format.itag} value={format.itag}>
+                    {format.quality} - {format.mimeType.split(";")[0]}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
             <Box sx={{ mt: 2 }}>
               <Button
                 variant="contained"
@@ -147,14 +222,24 @@ export const YoutubeDownloader: React.FC = () => {
               </Button>
             </Box>
 
-            {isDownloading && (
+            {downloadProgress && (
               <Box sx={{ mt: 2 }}>
                 <Typography variant="body2" gutterBottom>
-                  Download Progress: {Math.round(downloadProgress)}%
+                  {downloadProgress.status === "preparing" ? (
+                    "Preparing download..."
+                  ) : downloadProgress.status === "downloading" ? (
+                    <>
+                      Downloaded: {formatBytes(downloadProgress.downloadedBytes)} /{" "}
+                      {formatBytes(downloadProgress.totalBytes)}(
+                      {Math.round(downloadProgress.progress)}%)
+                    </>
+                  ) : null}
                 </Typography>
                 <LinearProgress
-                  variant="determinate"
-                  value={downloadProgress}
+                  variant={
+                    downloadProgress.status === "preparing" ? "indeterminate" : "determinate"
+                  }
+                  value={downloadProgress.progress}
                   sx={{ height: 10, borderRadius: 1 }}
                 />
               </Box>
